@@ -1,0 +1,32 @@
+# --- Git Metadata ---
+.git
+.gitignore
+.dockerignore
+
+# --- Security ---
+.env
+.env.*
+
+# --- Python Cache & Virtual Envs ---
+__pycache__
+venv
+.venv
+env
+*.pyc
+*.pyo
+*.pyd
+
+# --- IDE & OS ---
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# --- Application Data (Mount via volumes instead) ---
+qdrant_data
+postgres_data
+storage
+data
+
+README.md
+docs/

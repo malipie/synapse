@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # --- 1. Infrastructure: Vector Database ---
+  synapse-qdrant:
+    image: qdrant/qdrant:latest
+    container_name: synapse-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: always
+
+  # --- 2. Infrastructure: Task Queue / Cache ---
+  synapse-redis:
+    image: redis:7-alpine
+    container_name: synapse-redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  # --- 3. Application: API Backend ---
+  synapse-backend:
+    build: 
+      context: ./backend
+    container_name: synapse-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Montowanie kodu dla Hot-Reloading (zmiany w kodzie widoczne od razu)
+      - ./backend/app:/app/app
+      - ./data:/app/data
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - QDRANT_HOST=synapse-qdrant
+      - REDIS_HOST=synapse-redis
+    depends_on:
+      - synapse-qdrant
+      - synapse-redis
+    restart: always
+
+  # --- 4. Application: Async Worker (Arq) ---
+  synapse-worker:
+    build: 
+      context: ./backend # Używa tego samego obrazu co backend
+    container_name: synapse-worker
+    # Nadpisujemy domyślną komendę startową na workera Arq
+    command: python -m arq app.worker.WorkerSettings
+    volumes:
+      - ./backend/app:/app/app
+      - ./data:/app/data
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - QDRANT_HOST=synapse-qdrant
+      - REDIS_HOST=synapse-redis
+    depends_on:
+      - synapse-redis
+      - synapse-backend
+
+  # --- 5. Application: Frontend (Streamlit) ---
+  synapse-frontend:
+    build:
+      context: ./frontend
+    container_name: synapse-frontend
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./frontend:/app
+    environment:
+      # KLUCZOWE: Wewnątrz Dockera frontend łączy się z backendem po nazwie serwisu
+      - API_URL=http://synapse-backend:8000/api/v1
+    depends_on:
+      - synapse-backend
+
+    
