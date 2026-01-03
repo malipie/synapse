@@ -1,219 +1,125 @@
 import logging
+import os
 from typing import List, Dict, Optional
 
 # LiteLLM - gateway to models
 from litellm import completion
+import litellm  # Importujemy cały moduł
 
-# Google's libphonenumber
+# --- NAPRAWA: Poprawne przypisanie callbacków ---
+litellm.success_callback = ["langfuse"]
+litellm.failure_callback = ["langfuse"]
+# -----------------------------------------------
+
 import phonenumbers
-
-# Presidio - security layer (PII)
 from presidio_analyzer import (
     AnalyzerEngine, 
     RecognizerRegistry, 
     EntityRecognizer, 
-    RecognizerResult,
-    PatternRecognizer,
-    Pattern
+    RecognizerResult
 )
-# We need NlpEngineProvider to map 'pl' -> 'pl_core_news_md'
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
-# Configuration
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# --- Custom Recognizers ---
 class GooglePhoneRecognizer(EntityRecognizer):
-    """
-    Custom Presidio Recognizer that uses Google's libphonenumber 
-    to robustly detect phone numbers in any format.
-    """
-    
     def __init__(self, supported_language: str = "pl", default_region: str = "PL"):
-        super().__init__(
-            supported_entities=["PHONE_NUMBER"], 
-            supported_language=supported_language
-        )
+        super().__init__(supported_entities=["PHONE_NUMBER"], supported_language=supported_language)
         self.default_region = default_region
 
-    def load(self) -> None:
-        """No external model loading required for libphonenumber."""
-        pass
+    def load(self) -> None: pass
 
-    def analyze(
-        self, text: str, entities: List[str], nlp_artifacts=None
-    ) -> List[RecognizerResult]:
-        """
-        Scans text using phonenumbers.PhoneNumberMatcher.
-        """
+    def analyze(self, text: str, entities: List[str], nlp_artifacts=None) -> List[RecognizerResult]:
         results = []
-        
-        # Leniency.POSSIBLE is faster, Leniency.VALID is stricter.
-        # We use the matcher which iterates over found numbers.
         matcher = phonenumbers.PhoneNumberMatcher(text, self.default_region)
-        
         for match in matcher:
-            result = RecognizerResult(
-                entity_type="PHONE_NUMBER",
-                start=match.start,
-                end=match.end,
-                score=1.0  # libphonenumber is highly accurate
-            )
-            results.append(result)
-            
+            results.append(RecognizerResult("PHONE_NUMBER", match.start, match.end, 1.0))
         return results
 
 class SecureLLMService:
     def __init__(self):
-        """
-        Initializes the Secure LLM Gateway with robust PII detection for Polish.
-        """
-        logger.info("Initializing SecureLLMService with Google libphonenumber & Polish NLP...")
+        logger.info("Initializing SecureLLMService...")
         
-        # 1. Configure NLP Engine to use the Polish model
+        # Init PII Engine
         configuration = {
             "nlp_engine_name": "spacy",
-            "models": [
-                {"lang_code": "pl", "model_name": "pl_core_news_md"},
-                {"lang_code": "en", "model_name": "en_core_web_lg"} # Fallback/Standard
-            ],
+            "models": [{"lang_code": "pl", "model_name": "pl_core_news_md"}, {"lang_code": "en", "model_name": "en_core_web_lg"}],
         }
-        
         provider = NlpEngineProvider(nlp_configuration=configuration)
         nlp_engine = provider.create_engine()
 
-        # 2. Configuration of Presidio Registry
         registry = RecognizerRegistry()
-        
-        # Load standard recognizers.
         registry.load_predefined_recognizers(languages=["pl", "en"])
-
-        # 3. Register Custom Google Phone Recognizer
-        google_phone_recognizer = GooglePhoneRecognizer(default_region="PL")
-        registry.add_recognizer(google_phone_recognizer)
+        registry.add_recognizer(GooglePhoneRecognizer(default_region="PL"))
         
-        # 4. Initialize Analysis Engine with our Configured NLP Engine
-        # CRITICAL FIX: Removed 'supported_languages=["pl", "en"]' argument.
-        # We let the AnalyzerEngine derive supported languages from the registry automatically.
-        # This prevents the "ValueError: Misconfigured engine" crash on startup.
-        self.analyzer = AnalyzerEngine(
-            registry=registry, 
-            nlp_engine=nlp_engine
-        )
-        
-        # Log detected languages to verify 'pl' is present
-        logger.info(f"🛡️ Presidio Analyzer initialized. Supported languages: {self.analyzer.supported_languages}")
-
+        self.analyzer = AnalyzerEngine(registry=registry, nlp_engine=nlp_engine)
         self.anonymizer = AnonymizerEngine()
         
-        # LLM Model Config
         self.model_name = settings.OPENAI_MODEL_NAME if hasattr(settings, "OPENAI_MODEL_NAME") else "gpt-3.5-turbo"
 
     def _sanitize_input(self, text: str) -> str:
-        """
-        Detects and masks PII using Presidio + libphonenumber.
-        """
         try:
-            # 1. Analysis (Detection)
             results = self.analyzer.analyze(
-                text=text,
-                language="pl", # Explicitly analyze as Polish
+                text=text, language="pl",
                 entities=["PHONE_NUMBER", "EMAIL_ADDRESS", "PERSON", "NIP", "PESEL", "CREDIT_CARD"]
             )
-            
-            # 2. Anonymization (Masking)
-            anonymized_result = self.anonymizer.anonymize(
-                text=text,
-                analyzer_results=results,
-                operators={
-                    "DEFAULT": OperatorConfig("replace", {"new_value": "<PII_REDACTED>"}),
-                    "PHONE_NUMBER": OperatorConfig("replace", {"new_value": "<PHONE>"}),
-                    "PERSON": OperatorConfig("replace", {"new_value": "<PERSON>"}),
-                    "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "<EMAIL>"}),
-                    "PESEL": OperatorConfig("replace", {"new_value": "<PESEL>"}),
-                    "NIP": OperatorConfig("replace", {"new_value": "<NIP>"}),
-                    "CREDIT_CARD": OperatorConfig("replace", {"new_value": "<CREDIT_CARD>"}),
-                }
+            anonymized = self.anonymizer.anonymize(
+                text=text, analyzer_results=results,
+                operators={"DEFAULT": OperatorConfig("replace", {"new_value": "<PII_REDACTED>"})}
             )
-            
-            masked_text = anonymized_result.text
-            
-            if masked_text != text:
-                logger.warning(f"🛡️ PII Detected & Masked. Original len: {len(text)}, Masked len: {len(masked_text)}")
-                
-            return masked_text
-            
+            return anonymized.text
         except Exception as e:
-            logger.error(f"PII Masking failed: {e}. Passing original text.")
+            logger.error(f"PII Masking failed: {e}")
             return text
 
-    async def get_chat_response(
-        self, 
-        messages: List[Dict[str, str]], 
-        temperature: float = 0.3,
-        max_tokens: int = 1000
-    ) -> str:
-        """
-        Main entry point. Sanitize -> Route -> Generate.
-        Uses LiteLLM for vendor abstraction.
-        """
+    async def get_chat_response(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """Obsługa Small Talk (CHAT)."""
         try:
-            # 1. Sanitize the LAST user message
             if messages and messages[-1]["role"] == "user":
-                original_content = messages[-1]["content"]
-                masked_content = self._sanitize_input(original_content)
-                messages[-1]["content"] = masked_content
+                messages[-1]["content"] = self._sanitize_input(messages[-1]["content"])
 
-            # 2. Call LLM via LiteLLM
-            logger.info(f"Sending request to LiteLLM (Model: {self.model_name})...")
-            
+            # Wywołanie LLM - teraz LiteLLM na pewno użyje callbacków
             response = completion(
                 model=self.model_name,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens
+                metadata={
+                    "tags": ["small-talk"],
+                    "generation_name": "small-talk-response", # To ładnie wygląda w Langfuse
+                    "trace_user_id": "user-synapse"
+                } 
             )
-            
             return response.choices[0].message.content
-
         except Exception as e:
-            logger.error(f"LLM Service Error: {e}")
+            logger.error(f"LLM Chat Error: {e}")
             raise e
-            
+
     async def classify_intent(self, query: str) -> str:
-        """
-        Router logic using LiteLLM + PII Masking.
-        """
+        """Router Intencji."""
         try:
-            # Mask sensitive data in the router query as well
             safe_query = self._sanitize_input(query)
-            
-            system_prompt = (
-                "You are a routing agent for a medical system. "
-                "Classify user query into: 'RAG' (documents/facts) or 'CHAT' (greeting/smalltalk). "
-                "Return ONLY the category name."
-            )
-            
             response = completion(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": "Classify user intent: 'RAG' or 'CHAT'. Return ONE word."},
                     {"role": "user", "content": safe_query}
                 ],
                 temperature=0.0,
-                max_tokens=10
+                max_tokens=10,
+                metadata={
+                    "tags": ["router"],
+                    "generation_name": "intent-classification"
+                }
             )
-            
             intent = response.choices[0].message.content.strip().upper()
-            if "RAG" in intent: return "RAG"
-            return "CHAT"
-            
+            return "RAG" if "RAG" in intent else "CHAT"
         except Exception as e:
             logger.error(f"Router failed: {e}")
             return "RAG"
 
-# Singleton instance
-secure_llm = SecureLLMService() 
+secure_llm = SecureLLMService()

@@ -1,17 +1,7 @@
 version: '3.8'
 
 services:
-  # --- 1. Infrastructure: Vector Database ---
-  synapse-qdrant:
-    image: qdrant/qdrant:latest
-    container_name: synapse-qdrant
-    ports:
-      - "6333:6333"
-    volumes:
-      - ./qdrant_storage:/qdrant/storage
-    restart: always
-
-  # --- 2. Infrastructure: Task Queue / Cache ---
+  # --- 1. Infrastructure: Databases ---
   synapse-redis:
     image: redis:7-alpine
     container_name: synapse-redis
@@ -19,7 +9,50 @@ services:
       - "6379:6379"
     restart: always
 
-  # --- 3. Application: API Backend ---
+  synapse-qdrant:
+    image: qdrant/qdrant:latest
+    container_name: synapse-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    restart: always
+
+  # [NOWOŚĆ] Baza danych dla Langfuse (Observability)
+  synapse-db:
+    image: postgres:16-alpine
+    container_name: synapse-db
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+
+  # [NOWOŚĆ] Langfuse Server - Monitoring i Trace'y
+  synapse-langfuse:
+    image: langfuse/langfuse:2
+    container_name: synapse-langfuse
+    depends_on:
+      - synapse-db
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@synapse-db:5432/postgres
+      - NEXTAUTH_SECRET=mysecret
+      - SALT=mysalt
+      - NEXTAUTH_URL=http://localhost:3000
+      - TELEMETRY_ENABLED=false
+      # Automatyczne utworzenie konta Admina (żebyś nie musiał klikać)
+      - LANGFUSE_INIT_ORG_ID=synapse-org
+      - LANGFUSE_INIT_PROJECT_ID=synapse-project
+      - LANGFUSE_INIT_USER_EMAIL=admin@synapse.com
+      - LANGFUSE_INIT_USER_NAME=Admin
+      - LANGFUSE_INIT_USER_PASSWORD=password123
+    restart: always
+
+  # --- 2. Application: API Backend ---
   synapse-backend:
     build: 
       context: ./backend
@@ -27,25 +60,29 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Montowanie kodu dla Hot-Reloading (zmiany w kodzie widoczne od razu)
       - ./backend/app:/app/app
       - ./data:/app/data
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - QDRANT_HOST=synapse-qdrant
       - REDIS_HOST=synapse-redis
+      # Konfiguracja LiteLLM -> Langfuse
+      # Klucze public/secret są ignorowane przy autoryzacji lokalnej, ale wymagane przez bibliotekę
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
     depends_on:
       - synapse-qdrant
       - synapse-redis
+      - synapse-langfuse
     restart: always
 
-  # --- 4. Application: Async Worker (Arq) ---
+  # --- 3. Application: AI Worker ---
   synapse-worker:
     build: 
-      context: ./backend # Używa tego samego obrazu co backend
+      context: ./backend
     container_name: synapse-worker
-    # Nadpisujemy domyślną komendę startową na workera Arq
-    command: python -m arq app.worker.WorkerSettings
+    command: arq app.worker.WorkerSettings
     volumes:
       - ./backend/app:/app/app
       - ./data:/app/data
@@ -53,11 +90,17 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - QDRANT_HOST=synapse-qdrant
       - REDIS_HOST=synapse-redis
+      # Observability dla Workera
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
     depends_on:
+      - synapse-qdrant
       - synapse-redis
-      - synapse-backend
+      - synapse-langfuse
+    restart: always
 
-  # --- 5. Application: Frontend (Streamlit) ---
+  # --- 4. Frontend (Streamlit) ---
   synapse-frontend:
     build:
       context: ./frontend
@@ -67,9 +110,7 @@ services:
     volumes:
       - ./frontend:/app
     environment:
-      # KLUCZOWE: Wewnątrz Dockera frontend łączy się z backendem po nazwie serwisu
-      - API_URL=http://synapse-backend:8000/api/v1
+      - BACKEND_URL=http://synapse-backend:8000
     depends_on:
       - synapse-backend
-
-    
+    restart: always
