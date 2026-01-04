@@ -5,119 +5,101 @@ import time
 import json
 
 # --- Configuration ---
-# Wewnątrz sieci Docker, frontend widzi backend pod nazwą serwisu 'synapse-backend'
 API_URL = os.getenv("API_URL", "http://synapse-backend:8000/api/v1")
 
-st.set_page_config(
-    page_title="Synapse Enterprise",
-    page_icon="🧠",
-    layout="wide"
-)
+st.set_page_config(page_title="Synapse Enterprise", page_icon="🧠", layout="wide")
 
-# --- Header ---
 st.title("Synapse 🧠 ⟷ 🤖")
 st.markdown("### Enterprise Medical RAG & Agentic Platform")
-st.markdown("*(Powered by AutoGen, Arq & Qdrant)*")
 
-# --- Sidebar: Ingest ---
+# --- Sidebar ---
 with st.sidebar:
     st.header("🗂️ Document Ingestion")
     uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
     
     if uploaded_file:
         if st.button("Ingest Document"):
-            with st.spinner("Uploading & Processing (Fast Mode)..."):
+            with st.spinner("Uploading & Processing..."):
                 try:
                     files = {"file": (uploaded_file.name, uploaded_file, "application/pdf")}
-                    response = requests.post(f"{API_URL}/ingest", files=files)
-                    
+                    response = requests.post(f"{API_URL}/documents/ingest", files=files)
                     if response.status_code == 200:
-                        st.success("Document processed & vectorized successfully!")
+                        st.success("Document processed!")
                         st.json(response.json())
                     else:
-                        st.error(f"Error: {response.text}")
+                        st.error(f"Error {response.status_code}: {response.text}")
                 except Exception as e:
                     st.error(f"Connection failed: {e}")
-
     st.divider()
-    st.info("System Status: Async Agents Ready ⚡")
 
-# --- Chat Interface ---
-
-# Initialize chat history
+# --- Chat Logic ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- User Input & Async Workflow ---
-if prompt := st.chat_input("Ask a question regarding the medical documents..."):
-    # 1. Display User Message
+if prompt := st.chat_input("Ask a question..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Assistant Logic (Async Polling)
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         
         try:
-            # A. Enqueue Task (Fire & Forget)
-            # Send the message + history context
-            payload = {
-                "message": prompt,
-                "chat_history": [m for m in st.session_state.messages if m["role"] != "system"]
-            }
+            # 1. Wyślij zapytanie
+            payload = {"messages": [{"role": "user", "content": prompt}], "model": "gpt-3.5-turbo"}
+            response = requests.post(f"{API_URL}/chat/", json=payload)
             
-            enqueue_resp = requests.post(f"{API_URL}/chat/enqueue", json=payload)
-            
-            if enqueue_resp.status_code == 202:
-                task_data = enqueue_resp.json()
-                task_id = task_data["task_id"]
+            if response.status_code == 200:
+                data = response.json()
+                intent = data.get("intent")
                 
-                # B. Polling Loop (Waiting for Agents)
-                # We use st.status to show a cool spinner with steps
-                with st.status("🚀 Agents are working...", expanded=True) as status:
-                    st.write("✅ Request sanitized (PII Gateway)")
-                    st.write(f"⏳ Task queued (ID: {task_id[:8]}...)")
-                    st.write("🤖 Medical Agent Team activated...")
+                # A. Szybka odpowiedź (Small Talk)
+                if intent == "CHAT":
+                    content = data.get("content")
+                    message_placeholder.markdown(content)
+                    st.session_state.messages.append({"role": "assistant", "content": content})
+                
+                # B. Długa odpowiedź (RAG) - Tu wchodzi Polling
+                elif intent == "RAG":
+                    job_id = data.get("job_id")
                     
-                    # Poll every 2 seconds
-                    while True:
-                        status_resp = requests.get(f"{API_URL}/tasks/{task_id}")
+                    with st.status("🕵️‍♂️ Agents are thinking...", expanded=True) as status:
+                        st.write("✅ Request queued")
+                        st.write(f"🆔 Job ID: {job_id}")
                         
-                        if status_resp.status_code == 200:
-                            job_info = status_resp.json()
-                            job_status = job_info["status"]
+                        # PĘTLA POLLINGU
+                        while True:
+                            time.sleep(2) # Czekaj 2 sekundy
+                            # Pytamy o status zadania
+                            status_resp = requests.get(f"{API_URL}/chat/tasks/{job_id}")
                             
-                            if job_status == "complete":
-                                status.update(label="Response Ready!", state="complete", expanded=False)
-                                final_answer = job_info["result"]
-                                break
-                            
-                            elif job_status == "failed":
-                                status.update(label="Task Failed", state="error")
-                                st.error(f"Agents encountered an error: {job_info.get('error')}")
-                                final_answer = None
-                                break
-                            
+                            if status_resp.status_code == 200:
+                                job_data = status_resp.json()
+                                job_status = job_data.get("status")
+                                
+                                if job_status == "complete":
+                                    result = job_data.get("result")
+                                    status.update(label="Done!", state="complete", expanded=False)
+                                    # Wyświetl wynik końcowy
+                                    message_placeholder.markdown(result)
+                                    st.session_state.messages.append({"role": "assistant", "content": result})
+                                    break
+                                elif job_status == "in_progress" or job_status == "queued":
+                                    continue # Czekaj dalej
+                                else:
+                                    status.update(label="Failed", state="error")
+                                    st.error("Task failed.")
+                                    break
                             else:
-                                # Still queued or in_progress
-                                time.sleep(1.5)
-                        else:
-                            st.error("Failed to check task status.")
-                            break
-                
-                # C. Display Final Result
-                if final_answer:
-                    message_placeholder.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
-            
+                                st.error(f"Status check failed: {status_resp.status_code}")
+                                break
             else:
-                st.error(f"Failed to enqueue task. API returned: {enqueue_resp.status_code}")
+                st.error(f"API Error {response.status_code}")
+                st.json(response.json())
 
         except Exception as e:
             st.error(f"Frontend Logic Error: {e}")

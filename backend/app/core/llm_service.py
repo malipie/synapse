@@ -2,20 +2,21 @@ import logging
 import os
 from typing import List, Dict, Optional
 
-# LiteLLM - gateway to models
 from litellm import completion
-import litellm  # Importujemy cały moduł
+import litellm
+from langfuse import Langfuse
 
-# --- NAPRAWA: Poprawne przypisanie callbacków ---
+# Config LiteLLM
 litellm.success_callback = ["langfuse"]
 litellm.failure_callback = ["langfuse"]
-# -----------------------------------------------
 
 import phonenumbers
 from presidio_analyzer import (
     AnalyzerEngine, 
     RecognizerRegistry, 
     EntityRecognizer, 
+    PatternRecognizer,
+    Pattern,
     RecognizerResult
 )
 from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -31,9 +32,7 @@ class GooglePhoneRecognizer(EntityRecognizer):
     def __init__(self, supported_language: str = "pl", default_region: str = "PL"):
         super().__init__(supported_entities=["PHONE_NUMBER"], supported_language=supported_language)
         self.default_region = default_region
-
     def load(self) -> None: pass
-
     def analyze(self, text: str, entities: List[str], nlp_artifacts=None) -> List[RecognizerResult]:
         results = []
         matcher = phonenumbers.PhoneNumberMatcher(text, self.default_region)
@@ -41,9 +40,14 @@ class GooglePhoneRecognizer(EntityRecognizer):
             results.append(RecognizerResult("PHONE_NUMBER", match.start, match.end, 1.0))
         return results
 
+class PeselRecognizer(PatternRecognizer):
+    def __init__(self):
+        patterns = [Pattern(name="pesel_pattern", regex=r"\b\d{11}\b", score=1.0)]
+        super().__init__(supported_entity="PESEL", patterns=patterns, supported_language="pl")
+
 class SecureLLMService:
     def __init__(self):
-        logger.info("Initializing SecureLLMService...")
+        logger.info("Initializing SecureLLMService (Heavy Load)...")
         
         # Init PII Engine
         configuration = {
@@ -56,11 +60,13 @@ class SecureLLMService:
         registry = RecognizerRegistry()
         registry.load_predefined_recognizers(languages=["pl", "en"])
         registry.add_recognizer(GooglePhoneRecognizer(default_region="PL"))
+        registry.add_recognizer(PeselRecognizer())
         
         self.analyzer = AnalyzerEngine(registry=registry, nlp_engine=nlp_engine)
         self.anonymizer = AnonymizerEngine()
         
         self.model_name = settings.OPENAI_MODEL_NAME if hasattr(settings, "OPENAI_MODEL_NAME") else "gpt-3.5-turbo"
+        self.langfuse = Langfuse()
 
     def _sanitize_input(self, text: str) -> str:
         try:
@@ -78,19 +84,24 @@ class SecureLLMService:
             return text
 
     async def get_chat_response(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
-        """Obsługa Small Talk (CHAT)."""
         try:
+            system_prompt = self.langfuse.get_prompt("synapse-smalltalk").compile()
+            
+            if messages[0]["role"] != "system":
+                messages.insert(0, {"role": "system", "content": system_prompt})
+            else:
+                messages[0]["content"] = system_prompt
+
             if messages and messages[-1]["role"] == "user":
                 messages[-1]["content"] = self._sanitize_input(messages[-1]["content"])
 
-            # Wywołanie LLM - teraz LiteLLM na pewno użyje callbacków
             response = completion(
                 model=self.model_name,
                 messages=messages,
                 temperature=temperature,
                 metadata={
                     "tags": ["small-talk"],
-                    "generation_name": "small-talk-response", # To ładnie wygląda w Langfuse
+                    "generation_name": "small-talk-response", 
                     "trace_user_id": "user-synapse"
                 } 
             )
@@ -100,13 +111,14 @@ class SecureLLMService:
             raise e
 
     async def classify_intent(self, query: str) -> str:
-        """Router Intencji."""
         try:
             safe_query = self._sanitize_input(query)
+            router_prompt = self.langfuse.get_prompt("synapse-router")
+            
             response = completion(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": "Classify user intent: 'RAG' or 'CHAT'. Return ONE word."},
+                    {"role": "system", "content": router_prompt.compile()},
                     {"role": "user", "content": safe_query}
                 ],
                 temperature=0.0,
@@ -122,4 +134,11 @@ class SecureLLMService:
             logger.error(f"Router failed: {e}")
             return "RAG"
 
-secure_llm = SecureLLMService()
+# --- SINGLETON PATTERN ---
+_instance = None
+
+def get_secure_llm():
+    global _instance
+    if _instance is None:
+        _instance = SecureLLMService()
+    return _instance

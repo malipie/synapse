@@ -1,39 +1,56 @@
-import logging
-from typing import List, Annotated
+from typing import Annotated, Callable, Any
 from app.rag.vector_store import VectorStore
 
-# Configure logging
-logger = logging.getLogger(__name__)
-
-# global instance or a way to inject the store. 
-
-
-def search_documents_tool(
-    query: Annotated[str, "The search query to look up in the medical documents"],
-    vector_store: VectorStore
-) -> str:
+def get_search_tool(vector_store: VectorStore) -> Callable:
     """
-    Searches the vector database for relevant document chunks based on the query.
-    Returns the content found to be used as context.
+    Tworzy funkcję narzędziową dla AutoGena z wstrzykniętą bazą wektorową.
     """
-    try:
-        logger.info(f"Agent Tool invoked: Searching for '{query}'")
-        
-        # Perform retrieval (Hybrid Search provided by the backend core)
-        results = vector_store.search(query, limit=5)
-        
-        if not results:
-            return "No relevant information found in the documents."
+    
+    def search_documents(
+        query: Annotated[str, "Keywords to search. Do NOT use full sentences."]
+    ) -> str:
+        # Logowanie wewnątrz narzędzia pomaga w debugowaniu
+        print(f"🔎 [Tool] Researcher searching for: '{query}'")
+        try:
+            results = vector_store.search(query)
             
-        # Format the results for the Agent
-        context_str = ""
-        for i, res in enumerate(results, 1):
-            source = res['metadata'].get('filename', 'Unknown Source')
-            content = res['content']
-            context_str += f"Result {i} (Source: {source}):\n{content}\n\n"
+            if not results:
+                return "No documents found containing these keywords."
             
-        return context_str
+            formatted_results = []
+            for res in results:
+                # Obsługa różnych formatów zwracanych przez Qdrant
+                content = None
+                
+                # Próba wyciągnięcia tekstu z różnych miejsc
+                if isinstance(res, dict):
+                    content = res.get('text') or res.get('content') or res.get('page_content')
+                    if not content and 'payload' in res:
+                        payload = res['payload']
+                        if isinstance(payload, dict):
+                            content = payload.get('text') or payload.get('content')
+                elif hasattr(res, 'payload'):
+                    payload = res.payload
+                    if isinstance(payload, dict):
+                        content = payload.get('text') or payload.get('content')
+                
+                if not content: 
+                    content = str(res) # Fallback
 
-    except Exception as e:
-        logger.error(f"Search tool error: {str(e)}")
-        return f"Error occurred during search: {str(e)}"
+                clean_content = " ".join(content.split())[:2000]
+                
+                filename = "Unknown Source"
+                if isinstance(res, dict):
+                    meta = res.get('metadata') or res.get('payload') or {}
+                    filename = meta.get('filename') or meta.get('source') or "Unknown"
+                elif hasattr(res, 'payload') and isinstance(res.payload, dict):
+                    filename = res.payload.get('filename') or "Unknown"
+                
+                formatted_results.append(f"Source: {filename}\nContent: {clean_content}")
+
+            return "\n\n".join(formatted_results)
+
+        except Exception as e:
+            return f"Search Error: {str(e)}"
+
+    return search_documents

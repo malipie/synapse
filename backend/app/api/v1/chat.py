@@ -1,88 +1,73 @@
-import logging
-from typing import List, Optional, Dict
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import List, Optional
 
-# Security
-from app.core.llm_service import secure_llm
-# CRITICAL FIX: Import AppState from 'state.py', NOT 'main.py' to avoid circular import
-from app.state import AppState
+from app.core.llm_service import get_secure_llm 
+from arq import create_pool
+from arq.connections import RedisSettings
+# [NOWOŚĆ] Import klasy Job do sprawdzania statusu
+from arq.jobs import Job, JobStatus 
+from app.core.config import settings
+import os
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
-# --- Models ---
 class ChatRequest(BaseModel):
-    message: str
-    chat_history: Optional[List[Dict[str, str]]] = []
+    messages: List[dict]
+    model: Optional[str] = "gpt-3.5-turbo"
 
-class TaskResponse(BaseModel):
-    task_id: str
-    status: str
-    message: str
-
-class TaskStatusResponse(BaseModel):
-    task_id: str
-    status: str
-    result: Optional[str] = None
-    error: Optional[str] = None
-
-# --- Endpoints ---
-
-@router.post("/chat/enqueue", response_model=TaskResponse, status_code=202)
-async def enqueue_chat_task(request: ChatRequest):
-    if not AppState.arq_pool:
-        raise HTTPException(status_code=503, detail="Task queue not available")
-
+@router.post("/")
+async def chat_endpoint(request: ChatRequest):
     try:
-        raw_query = request.message
-        safe_query = secure_llm._sanitize_input(raw_query)
+        user_query = request.messages[-1]["content"]
+        secure_llm = get_secure_llm()
+
+        # 1. Klasyfikacja
+        intent = await secure_llm.classify_intent(user_query)
         
-        # Enqueue job using the pool from AppState
-        job = await AppState.arq_pool.enqueue_job('run_agent_workflow', safe_query)
+        # 2. CHAT
+        if intent == "CHAT":
+            response = await secure_llm.get_chat_response(request.messages)
+            return {"role": "assistant", "content": response, "intent": "CHAT"}
         
-        return TaskResponse(
-            task_id=job.job_id,
-            status="queued",
-            message="Agent workflow started in background."
-        )
+        # 3. RAG
+        redis_host = getattr(settings, "REDIS_HOST", "synapse-redis")
+        redis = await create_pool(RedisSettings(host=redis_host, port=6379))
+        
+        job = await redis.enqueue_job("run_agent_workflow", user_query)
+        await redis.close()
+        
+        return {
+            "role": "assistant", 
+            "content": "Rozpoczynam analizę dokumentów...",
+            "job_id": job.job_id,
+            "intent": "RAG"
+        }
 
     except Exception as e:
-        logger.error(f"Enqueue failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        print(f"❌ CHAT ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
-    if not AppState.arq_pool:
-        raise HTTPException(status_code=503, detail="Task queue not available")
-
+# [NOWOŚĆ] Endpoint do sprawdzania statusu zadania
+@router.get("/tasks/{job_id}")
+async def get_task_status(job_id: str):
     try:
-        from arq.jobs import Job, JobStatus
+        redis_host = getattr(settings, "REDIS_HOST", "synapse-redis")
+        redis = await create_pool(RedisSettings(host=redis_host, port=6379))
         
-        job = Job(task_id, AppState.arq_pool)
+        job = Job(job_id, redis)
         status = await job.status()
-
-        # Normalize status to a simple string like 'queued', 'started', 'complete', 'failed'
-        try:
-            status_str = status.value if hasattr(status, 'value') else str(status)
-        except Exception:
-            status_str = str(status)
-
-        # In case str(status) returns 'JobStatus.complete', take last token
-        if isinstance(status_str, str) and '.' in status_str:
-            status_str = status_str.split('.')[-1]
-
-        status_str = status_str.lower()
-
-        response = TaskStatusResponse(task_id=task_id, status=status_str)
-
-        if status_str == 'complete':
-            response.result = await job.result()
-        elif status_str == 'failed':
-            response.error = "Task execution failed."
+        
+        result = None
+        if status == JobStatus.complete:
+            result = await job.result()
             
-        return response
-
+        await redis.close()
+        
+        return {
+            "job_id": job_id,
+            "status": status,
+            "result": result
+        }
     except Exception as e:
-        logger.warning(f"Task check error: {e}")
-        return TaskStatusResponse(task_id=task_id, status="not_found", error="Task not found")
+        raise HTTPException(status_code=500, detail=str(e))

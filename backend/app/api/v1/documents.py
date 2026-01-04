@@ -3,7 +3,8 @@ import shutil
 import os
 import logging
 from app.rag.docling_parser import pdf_processor
-# IMPORT THE DEPENDENCY, NOT THE INSTANCE
+# [FIX] Importujemy get_secure_llm
+from app.core.llm_service import get_secure_llm 
 from app.rag.vector_store import get_vector_store, VectorStore
 
 # Initialize router
@@ -13,11 +14,10 @@ logger = logging.getLogger(__name__)
 @router.post("/ingest", summary="Upload and parse a PDF document")
 async def ingest_document(
     file: UploadFile = File(...),
-    # Inject VectorStore using Dependency Injection
     v_store: VectorStore = Depends(get_vector_store)
 ):
     """
-    Receives a PDF file, parses it, and indexes it in Qdrant.
+    Receives a PDF file, parses it via Docling, MASKS PII, and indexes it in Qdrant.
     """
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
@@ -32,29 +32,37 @@ async def ingest_document(
             shutil.copyfileobj(file.file, buffer)
             
         logger.info("Starting Docling parsing...")
+        # 1. Parsowanie PDF (Zostawiamy Twoją logikę)
         result = pdf_processor.parse_pdf(temp_path)
         
+        # 2. [NOWOŚĆ] Maskowanie PII w wyciągniętym tekście
+        logger.info("Sanitizing content (PII Masking)...")
+        secure_llm = get_secure_llm()
+        
+        # Wyciągamy tekst, maskujemy go i podmieniamy w obiekcie result
+        original_content = result["content"]
+        # Używamy _sanitize_input (zwraca string)
+        safe_content = secure_llm._sanitize_input(original_content)
+        
         logger.info("Vectorizing and saving to Qdrant...")
-        # Use the injected instance 'v_store'
         v_store.add_document(
             filename=result["filename"],
-            content=result["content"],
-            metadata={"page_count": result["page_count"]}
+            content=safe_content, # Zapisujemy bezpieczną wersję
+            metadata={"page_count": result["page_count"], "pii_masked": True}
         )
         
         os.remove(temp_path)
         
         return {
             "status": "success",
-            "message": "Document parsed and indexed successfully.",
+            "message": "Document parsed, sanitized and indexed successfully.",
             "filename": result["filename"],
             "pages": result["page_count"],
-            "preview": result["content"][:200] + "..."
+            "preview": safe_content[:200] + "..."
         }
 
     except Exception as e:
         logger.error(f"Ingestion failed: {str(e)}")
-        # If it's our validation error (wrong vector size), pass 400 instead of 500
         if "vector size" in str(e):
              raise HTTPException(status_code=400, detail=str(e))
              

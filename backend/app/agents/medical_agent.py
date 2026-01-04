@@ -1,18 +1,22 @@
 import logging
 import os
-from typing import Annotated
-
 import autogen
-# Import LiteLLM do obsługi Langfuse wewnątrz AutoGen
-from litellm import completion 
+from langfuse import Langfuse
+import litellm 
+
 from app.rag.vector_store import VectorStore
 from app.core.config import settings
+
+# Import nowych modułów
+from app.agents.tools import get_search_tool
+from app.agents.reviewer_agent import get_reviewer_agent
 
 logger = logging.getLogger(__name__)
 
 class MedicalAgentTeam:
     def __init__(self, vector_store: VectorStore):
         self.vector_store = vector_store
+        self.langfuse = Langfuse()
         
         # Konfiguracja LLM
         config_list = [{
@@ -20,7 +24,6 @@ class MedicalAgentTeam:
             "api_key": settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY"),
             "tags": ["autogen", "medical-agent"],
         }]
-
         self.llm_config = {
             "config_list": config_list,
             "temperature": 0.1, 
@@ -29,29 +32,14 @@ class MedicalAgentTeam:
     def run(self, user_query: str) -> str:
         logger.info(f"🚀 Starting Agent Run for: {user_query}")
         try:
-            # 1. Observability
-            import litellm
+            # Observability
             litellm.success_callback = ["langfuse"]
             litellm.failure_callback = ["langfuse"]
+            
+            # 1. Pobranie Promptu Researchera
+            researcher_prompt = self.langfuse.get_prompt("synapse-researcher").compile()
 
-            # 2. Narzędzie RAG
-            def search_documents(query: Annotated[str, "Keywords"]) -> str:
-                print(f"🔎 DEBUG: Searching: '{query}'")
-                try:
-                    results = self.vector_store.search(query)
-                    if not results: return "No documents found."
-                    
-                    # Formatowanie
-                    formatted = []
-                    for res in results:
-                        content = str(res.get('content') or res.get('text') or str(res))
-                        clean = " ".join(content.split())[:2000]
-                        formatted.append(f"Content: {clean}")
-                    return "\n\n".join(formatted)
-                except Exception as e:
-                    return f"Error: {e}"
-
-            # 3. Agenci
+            # 2. Setup Admina
             user_proxy = autogen.UserProxyAgent(
                 name="Admin",
                 system_message="Executor.",
@@ -60,29 +48,28 @@ class MedicalAgentTeam:
                 default_auto_reply="...",
             )
 
+            # 3. Setup Researchera
             researcher = autogen.AssistantAgent(
                 name="Researcher",
                 llm_config=self.llm_config,
-                system_message="You are a Helpful Assistant. Answer the user question using search_documents tool. Answer in Polish."
+                system_message=researcher_prompt
             )
 
-            critic = autogen.AssistantAgent(
-                name="Critic",
-                llm_config=self.llm_config,
-                system_message="Check the answer. If good, say 'TERMINATE'."
-            )
+            # 4. Setup Krytyka (z modułu)
+            critic = get_reviewer_agent(self.llm_config)
+
+            # 5. Rejestracja Narzędzi (z modułu)
+            search_tool_func = get_search_tool(self.vector_store)
 
             autogen.register_function(
-                search_documents,
+                search_tool_func,
                 caller=researcher,
                 executor=user_proxy,
                 name="search_documents",
-                description="Search documents"
+                description="Search for medical documents based on keywords."
             )
 
-            # 4. Chat - ZMIANA NA ROUND_ROBIN
-            # To wymusi: Admin -> Researcher -> Critic -> Admin ...
-            # Dzięki temu Researcher NIE ZOSTANIE POMINIĘTY.
+            # 6. Start Czat
             groupchat = autogen.GroupChat(
                 agents=[user_proxy, researcher, critic], 
                 messages=[], 
@@ -96,25 +83,13 @@ class MedicalAgentTeam:
                 message=f"Pytanie użytkownika: '{user_query}'. Znajdź odpowiedź w dokumentach i odpowiedz po polsku."
             )
 
-            # 5. Wyciąganie odpowiedzi (Pancerne)
-            final_response = "Przepraszam, system nie wygenerował odpowiedzi (Brak wiadomości Researchera)."
-            
-            # DEBUG: Wypisz historię w logach
-            logger.info(f"📊 Chat History Count: {len(groupchat.messages)}")
-            
+            # 7. Wynik
+            final_response = "Przepraszam, system nie wygenerował odpowiedzi."
             for msg in reversed(groupchat.messages):
-                role = msg.get('name')
-                content = msg.get('content')
-                
-                # Szukamy cokolwiek co powiedział Researcher
-                if role == "Researcher" and content:
-                    final_response = content
+                if msg.get('name') == "Researcher" and msg.get('content'):
+                    final_response = msg.get('content')
                     break
             
-            # OSTATECZNE ZABEZPIECZENIE
-            if final_response is None:
-                return "CRITICAL ERROR: Logic returned None."
-                
             return final_response
 
         except Exception as e:
