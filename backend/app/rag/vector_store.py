@@ -72,18 +72,15 @@ class VectorStore:
         Robustly handles version mismatches between client and server.
         """
         try:
-            # 1. Sprawdź, czy kolekcja w ogóle istnieje (to zazwyczaj nie rzuca błędów walidacji)
             collections_response = self.client.get_collections()
             collection_names = [c.name for c in collections_response.collections]
 
             should_recreate = False
 
             if self.collection_name in collection_names:
-                # 2. Jeśli istnieje, spróbuj pobrać jej konfigurację
                 try:
                     info = self.client.get_collection(self.collection_name)
                     
-                    # Sprawdź czy posiada konfigurację dla 'text-sparse'
                     sparse_config = info.config.params.sparse_vectors
                     
                     if not sparse_config or "text-sparse" not in sparse_config:
@@ -93,23 +90,19 @@ class VectorStore:
                         logger.info(f"Collection validated successfully.")
 
                 except (ValidationError, ResponseHandlingException) as ve:
-                    # 3. CRITICAL FIX: Złap błąd walidacji Pydantic
                     logger.warning(f"Version mismatch detected (Client vs Server schema): {ve}. Forcing recreation to fix state.")
                     should_recreate = True
             else:
                 should_recreate = True
 
-            # 4. Wykonaj reset jeśli trzeba
             if should_recreate:
                 logger.info(f"Recreating Hybrid Collection '{self.collection_name}'...")
                 
-                # Usuń starą (ignoruj błędy jeśli nie istnieje)
                 try:
                     self.client.delete_collection(self.collection_name)
                 except Exception:
                     pass
 
-                # Stwórz nową
                 self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=models.VectorParams(
@@ -128,7 +121,6 @@ class VectorStore:
                 
         except Exception as e:
             logger.error(f"Error during collection validation/creation: {e}")
-            # Nie rzucamy 'raise', żeby aplikacja mogła wstać, nawet jeśli baza ma czkawkę
             
     def _get_dense_embeddings(self, texts: List[str]) -> List[List[float]]:
         if self.provider == "openai":

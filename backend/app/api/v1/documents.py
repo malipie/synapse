@@ -3,7 +3,6 @@ import shutil
 import os
 import logging
 from app.rag.docling_parser import pdf_processor
-# [FIX] Importujemy get_secure_llm
 from app.core.llm_service import get_secure_llm 
 from app.rag.vector_store import get_vector_store, VectorStore
 
@@ -32,22 +31,20 @@ async def ingest_document(
             shutil.copyfileobj(file.file, buffer)
             
         logger.info("Starting Docling parsing...")
-        # 1. Parsowanie PDF (Zostawiamy Twoją logikę)
         result = pdf_processor.parse_pdf(temp_path)
         
-        # 2. [NOWOŚĆ] Maskowanie PII w wyciągniętym tekście
+
         logger.info("Sanitizing content (PII Masking)...")
         secure_llm = get_secure_llm()
         
-        # Wyciągamy tekst, maskujemy go i podmieniamy w obiekcie result
+
         original_content = result["content"]
-        # Używamy _sanitize_input (zwraca string)
         safe_content = secure_llm._sanitize_input(original_content)
         
         logger.info("Vectorizing and saving to Qdrant...")
         v_store.add_document(
             filename=result["filename"],
-            content=safe_content, # Zapisujemy bezpieczną wersję
+            content=safe_content,
             metadata={"page_count": result["page_count"], "pii_masked": True}
         )
         

@@ -7,7 +7,7 @@ import logging
 
 from app.core.config import settings
 from app.state import AppState 
-# Importujemy poprawione routery
+# Import fixed routers
 from app.api.v1 import chat, documents
 
 logging.basicConfig(level=logging.INFO)
@@ -36,10 +36,10 @@ app = FastAPI(
     title="Synapse API",
     version="1.0.0",
     lifespan=lifespan,
-    openapi_url="/api/v1/openapi.json" # Ważne dla Swaggera
+    openapi_url="/api/v1/openapi.json" # Important for Swagger
 )
 
-# CORS - Pozwalamy na wszystko w trybie dev
+# CORS - Allow everything in dev mode
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,8 +48,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- REJESTRACJA ROUTERÓW (POPRAWIONA) ---
-# Teraz backend będzie słuchał tam, gdzie Streamlit puka
+# --- ROUTER REGISTRATION (FIXED) ---
+# Now backend listens on endpoints expected by the frontend
 
 # 1. Chat: /api/v1/chat
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])

@@ -1,20 +1,20 @@
 import os
 import sys
 
-# Dodajemy katalog nadrzędny do ścieżki, żeby widzieć moduły aplikacji (opcjonalne, tu używamy tylko SDK)
+# Add parent directory to path to see app modules (optional, here we only use SDK)
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from langfuse import Langfuse
 from dotenv import load_dotenv
 
-# Ładowanie zmiennych środowiskowych (jeśli uruchamiasz lokalnie z terminala)
-# Upewnij się, że masz ustawione LANGFUSE_PUBLIC_KEY, SECRET_KEY i HOST
+# Load environment variables (if running locally from terminal)
+# Ensure LANGFUSE_PUBLIC_KEY, SECRET_KEY and HOST are set
 load_dotenv()
 
 def init_prompts():
     print("🚀 Initializing Langfuse Prompts...")
     
-    # Inicjalizacja klienta
+    # Client initialization
     langfuse = Langfuse()
     
     # 1. Router Intent

@@ -1,32 +1,39 @@
-# --- Git Metadata ---
+# Git
 .git
 .gitignore
+.github
+
+# Docker
+docker-compose.yml
+Dockerfile
 .dockerignore
 
-# --- Security ---
+# Environment
 .env
-.env.*
+.env*
 
-# --- Python Cache & Virtual Envs ---
-__pycache__
-venv
-.venv
-env
-*.pyc
-*.pyo
-*.pyd
+# Python / Backend junk
+**/__pycache__
+**/*.pyc
+**/venv
+**/.venv
+**/tests
+**/pytest_cache
 
-# --- IDE & OS ---
-.vscode
-.idea
-.DS_Store
-Thumbs.db
+# Node / Frontend junk
+**/node_modules
+**/.next
+**/npm-debug.log
+**/readme.md
 
-# --- Application Data (Mount via volumes instead) ---
-qdrant_data
+# Data Volumes
 postgres_data
-storage
-data
+qdrant_data
+redis_data
 
+# Documentation & Others
 README.md
 docs/
+locustfile.py
+*.csv
+*.html

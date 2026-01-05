@@ -1,13 +1,13 @@
 import pytest
 from unittest.mock import MagicMock, patch
-# Importujemy KLASĘ, a nie gotową instancję
+# Import the CLASS, not an instantiated object
 from app.core.llm_service import SecureLLMService
 
 @pytest.fixture
 def mock_dependencies():
     """
-    To jest klucz do sukcesu. Podmieniamy wszystkie zewnętrzne zależności
-    ZANIM SecureLLMService spróbuje ich użyć.
+    This is the key to success. We mock all external dependencies
+    BEFORE SecureLLMService attempts to use them.
     """
     with patch("app.core.llm_service.Langfuse") as MockLangfuse, \
          patch("app.core.llm_service.AnalyzerEngine") as MockAnalyzer, \
@@ -15,9 +15,9 @@ def mock_dependencies():
          patch("app.core.llm_service.NlpEngineProvider") as MockNlpProvider, \
          patch("app.core.llm_service.completion") as MockCompletion:
         
-        # Konfigurujemy Mocki, żeby zwracały to, co chcemy
+        # Configure Mocks to return what we expect
         mock_lf_instance = MockLangfuse.return_value
-        # Mockujemy kompilację promptu
+        # Mock prompt compilation
         mock_lf_instance.get_prompt.return_value.compile.return_value = "System Prompt"
         
         yield {
@@ -30,54 +30,54 @@ def mock_dependencies():
 @pytest.mark.asyncio
 async def test_pii_masking_logic(mock_dependencies):
     """
-    Testujemy logikę maskowania, ale bez ładowania ciężkiego spaCy.
-    Symulujemy, że Analyzer coś znalazł.
+    We test the masking logic without loading the heavy spaCy library.
+    We simulate that the Analyzer found something.
     """
     mocks = mock_dependencies
     
-    # Symulujemy, że Analyzer znalazł PESEL (zwraca listę wyników)
-    # W prawdziwym teście integracyjnym sprawdzaliśmy spaCy, 
-    # tu sprawdzamy czy serwis poprawnie woła Anonymizera.
+    # Simulate that Analyzer found a PESEL (returns a list of results)
+    # In a real integration test, we would check spaCy,
+    # here we check if the service correctly calls the Anonymizer.
     mocks["analyzer"].analyze.return_value = ["mock_result"]
-    mocks["anonymizer"].anonymize.return_value.text = "Mój PESEL to <PII_REDACTED>"
+    mocks["anonymizer"].anonymize.return_value.text = "My PESEL is <PII_REDACTED>"
 
-    # Tworzymy instancję (teraz jest lekka jak piórko, bo wszystko jest zmockowane)
+    # Create an instance (LIGHTWEIGHT - because everything in __init__ is mocked)
     service = SecureLLMService()
     
-    result = service._sanitize_input("Mój PESEL to 99999999999")
+    result = service._sanitize_input("My PESEL is 99999999999")
     
     assert "<PII_REDACTED>" in result
-    # Sprawdzamy czy Analyzer został zawołany z odpowiednimi parametrami
+    # Check if Analyzer was called with the correct parameters
     mocks["analyzer"].analyze.assert_called()
 
 @pytest.mark.asyncio
 async def test_router_classification_rag(mock_dependencies):
-    """Test routera RAG bez żadnych ryzykownych wątków."""
+    """Test the RAG router without any risky threads."""
     mocks = mock_dependencies
     
-    # Symulujemy odpowiedź OpenAI "RAG"
+    # Simulate "RAG" response from OpenAI
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "RAG"
     mocks["completion"].return_value = mock_response
 
     service = SecureLLMService()
-    intent = await service.classify_intent("Dokumentacja medyczna")
+    intent = await service.classify_intent("Medical documentation")
     
     assert intent == "RAG"
-    # Sprawdzamy czy pobrał prompt z Langfuse
+    # Check if it fetched the prompt from Langfuse
     mocks["langfuse"].get_prompt.assert_called_with("synapse-router")
 
 @pytest.mark.asyncio
 async def test_router_classification_chat(mock_dependencies):
-    """Test routera CHAT."""
+    """Test the CHAT router."""
     mocks = mock_dependencies
     
-    # Symulujemy odpowiedź OpenAI "CHAT"
+    # Simulate "CHAT" response from OpenAI
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "CHAT"
     mocks["completion"].return_value = mock_response
 
     service = SecureLLMService()
-    intent = await service.classify_intent("Cześć!")
+    intent = await service.classify_intent("Hello!")
     
     assert intent == "CHAT"

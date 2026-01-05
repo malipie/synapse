@@ -1,13 +1,13 @@
 import pytest
 from unittest.mock import MagicMock, patch
-# Importujemy klasę, ale jej nie uruchamiamy
+# Import the class, but do not instantiate it yet
 from app.core.llm_service import SecureLLMService
 
 @pytest.fixture
 def mock_dependencies():
     """
-    Podmieniamy wszystkie ciężkie biblioteki na atrapy (Mocki).
-    Dzięki temu testy w ogóle nie dotykają spaCy ani Langfuse.
+    We replace all heavy libraries with dummies (Mocks).
+    Thanks to this, tests do not touch spaCy or Langfuse at all.
     """
     with patch("app.core.llm_service.Langfuse") as MockLangfuse, \
          patch("app.core.llm_service.AnalyzerEngine") as MockAnalyzer, \
@@ -15,7 +15,7 @@ def mock_dependencies():
          patch("app.core.llm_service.NlpEngineProvider") as MockNlpProvider, \
          patch("app.core.llm_service.completion") as MockCompletion:
         
-        # Konfiguracja Mocków
+        # Mock Configuration
         mock_lf_instance = MockLangfuse.return_value
         mock_lf_instance.get_prompt.return_value.compile.return_value = "System Prompt"
         
@@ -28,17 +28,17 @@ def mock_dependencies():
 
 @pytest.mark.asyncio
 async def test_pii_masking_logic(mock_dependencies):
-    """Testujemy logikę maskowania (czy woła Anonymizera)."""
+    """We test the masking logic (whether it calls the Anonymizer)."""
     mocks = mock_dependencies
     
-    # Symulujemy, że Analyzer znalazł PESEL
+    # Simulate that Analyzer found a PESEL
     mocks["analyzer"].analyze.return_value = ["mock_result"]
-    mocks["anonymizer"].anonymize.return_value.text = "Mój PESEL to <PII_REDACTED>"
+    mocks["anonymizer"].anonymize.return_value.text = "My PESEL is <PII_REDACTED>"
 
-    # Tworzymy instancję (LEKKĄ - bo wszystko w __init__ jest zmockowane)
+    # Create an instance (LIGHTWEIGHT - because everything in __init__ is mocked)
     service = SecureLLMService()
     
-    result = service._sanitize_input("Mój PESEL to 99999999999")
+    result = service._sanitize_input("My PESEL is 99999999999")
     
     assert "<PII_REDACTED>" in result
     mocks["analyzer"].analyze.assert_called()
@@ -47,13 +47,13 @@ async def test_pii_masking_logic(mock_dependencies):
 async def test_router_classification_rag(mock_dependencies):
     mocks = mock_dependencies
     
-    # Symulujemy odpowiedź "RAG" z OpenAI
+    # Simulate "RAG" response from OpenAI
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "RAG"
     mocks["completion"].return_value = mock_response
 
     service = SecureLLMService()
-    intent = await service.classify_intent("Dokumentacja")
+    intent = await service.classify_intent("Documentation")
     
     assert intent == "RAG"
     mocks["langfuse"].get_prompt.assert_called_with("synapse-router")
@@ -62,12 +62,12 @@ async def test_router_classification_rag(mock_dependencies):
 async def test_router_classification_chat(mock_dependencies):
     mocks = mock_dependencies
     
-    # Symulujemy odpowiedź "CHAT" z OpenAI
+    # Simulate "CHAT" response from OpenAI
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "CHAT"
     mocks["completion"].return_value = mock_response
 
     service = SecureLLMService()
-    intent = await service.classify_intent("Cześć!")
+    intent = await service.classify_intent("Hello!")
     
     assert intent == "CHAT"

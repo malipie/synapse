@@ -5,7 +5,6 @@ from typing import List, Optional
 from app.core.llm_service import get_secure_llm 
 from arq import create_pool
 from arq.connections import RedisSettings
-# [NOWOŚĆ] Import klasy Job do sprawdzania statusu
 from arq.jobs import Job, JobStatus 
 from app.core.config import settings
 import os
@@ -22,7 +21,7 @@ async def chat_endpoint(request: ChatRequest):
         user_query = request.messages[-1]["content"]
         secure_llm = get_secure_llm()
 
-        # 1. Klasyfikacja
+        # 1. Classyfication
         intent = await secure_llm.classify_intent(user_query)
         
         # 2. CHAT
@@ -48,7 +47,6 @@ async def chat_endpoint(request: ChatRequest):
         print(f"❌ CHAT ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# [NOWOŚĆ] Endpoint do sprawdzania statusu zadania
 @router.get("/tasks/{job_id}")
 async def get_task_status(job_id: str):
     try:
@@ -71,3 +69,11 @@ async def get_task_status(job_id: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/health")
+@router.get("/health")
+async def health_check():
+    return {
+        "status": "ok", 
+        "mock_mode": os.getenv("MOCK_LLM", "false")
+    }

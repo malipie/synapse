@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # --- 1. Infrastructure: Databases ---
   synapse-redis:
@@ -8,6 +6,8 @@ services:
     ports:
       - "6379:6379"
     restart: always
+    networks:
+      - synapse-network
 
   synapse-qdrant:
     image: qdrant/qdrant:latest
@@ -17,8 +17,10 @@ services:
     volumes:
       - ./qdrant_data:/qdrant/storage
     restart: always
+    networks:
+      - synapse-network
 
-  # [NOWOŚĆ] Baza danych dla Langfuse (Observability)
+  # Database for Langfuse
   synapse-db:
     image: postgres:16-alpine
     container_name: synapse-db
@@ -29,28 +31,33 @@ services:
       - POSTGRES_DB=postgres
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - synapse-network
 
-  # [NOWOŚĆ] Langfuse Server - Monitoring i Trace'y
+  # Langfuse Server - Monitoring
   synapse-langfuse:
     image: langfuse/langfuse:2
     container_name: synapse-langfuse
     depends_on:
       - synapse-db
     ports:
-      - "3000:3000"
+      # [CHANGE] Moving Langfuse to 3001, because Frontend will take 3000
+      - "3001:3000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@synapse-db:5432/postgres
       - NEXTAUTH_SECRET=mysecret
       - SALT=mysalt
-      - NEXTAUTH_URL=http://localhost:3000
+      # [CHANGE] Update URL for Langfuse
+      - NEXTAUTH_URL=http://localhost:3001
       - TELEMETRY_ENABLED=false
-      # Automatyczne utworzenie konta Admina (żebyś nie musiał klikać)
       - LANGFUSE_INIT_ORG_ID=synapse-org
       - LANGFUSE_INIT_PROJECT_ID=synapse-project
       - LANGFUSE_INIT_USER_EMAIL=admin@synapse.com
       - LANGFUSE_INIT_USER_NAME=Admin
       - LANGFUSE_INIT_USER_PASSWORD=password123
     restart: always
+    networks:
+      - synapse-network
 
   # --- 2. Application: API Backend ---
   synapse-backend:
@@ -64,10 +71,9 @@ services:
       - ./data:/app/data
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # - MOCK_LLM=false
       - QDRANT_HOST=synapse-qdrant
       - REDIS_HOST=synapse-redis
-      # Konfiguracja LiteLLM -> Langfuse
-      # Klucze public/secret są ignorowane przy autoryzacji lokalnej, ale wymagane przez bibliotekę
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
       - LANGFUSE_HOST=${LANGFUSE_HOST}
@@ -76,6 +82,8 @@ services:
       - synapse-redis
       - synapse-langfuse
     restart: always
+    networks:
+      - synapse-network
 
   # --- 3. Application: AI Worker ---
   synapse-worker:
@@ -88,9 +96,9 @@ services:
       - ./data:/app/data
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # - MOCK_LLM=false
       - QDRANT_HOST=synapse-qdrant
       - REDIS_HOST=synapse-redis
-      # Observability dla Workera
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
       - LANGFUSE_HOST=${LANGFUSE_HOST}
@@ -99,18 +107,30 @@ services:
       - synapse-redis
       - synapse-langfuse
     restart: always
+    networks:
+      - synapse-network
 
-  # --- 4. Frontend (Streamlit) ---
+  # --- 4. Frontend (Next.js) ---
   synapse-frontend:
     build:
       context: ./frontend
+      dockerfile: Dockerfile
     container_name: synapse-frontend
+    restart: unless-stopped
     ports:
-      - "8501:8501"
+      - "3000:3000"
     volumes:
       - ./frontend:/app
+      - /app/node_modules
     environment:
-      - BACKEND_URL=http://synapse-backend:8000
+      - API_URL=http://synapse-backend:8000/api/v1
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
     depends_on:
       - synapse-backend
-    restart: always
+    networks:
+      - synapse-network
+
+# --- GLOBAL NETWORK DEFINITION ---
+networks:
+  synapse-network:
+    driver: bridge

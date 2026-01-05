@@ -3,13 +3,13 @@ from langfuse import Langfuse
 
 def get_reviewer_agent(llm_config: dict) -> autogen.AssistantAgent:
     """
-    Tworzy i konfiguruje agenta Krytyka (Reviewer/Critic).
-    Pobiera prompt dynamicznie z Langfuse.
+    Creates and configures the Critic agent.
+    Dynamically fetches the prompt from Langfuse.
     """
     langfuse = Langfuse()
     
-    # Pobieramy prompt z chmury (z cache)
-    # Dzięki Lazy Loading w main app, tutaj import jest bezpieczny
+    # Fetch prompt from cloud (cached)
+    # Thanks to Lazy Loading in main app, import is safe here
     critic_prompt = langfuse.get_prompt("synapse-critic").compile()
 
     critic = autogen.AssistantAgent(

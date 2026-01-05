@@ -3,13 +3,13 @@ from app.rag.vector_store import VectorStore
 
 def get_search_tool(vector_store: VectorStore) -> Callable:
     """
-    Tworzy funkcję narzędziową dla AutoGena z wstrzykniętą bazą wektorową.
+    Creates a utility function for AutoGen with an injected vector database.
     """
     
     def search_documents(
         query: Annotated[str, "Keywords to search. Do NOT use full sentences."]
     ) -> str:
-        # Logowanie wewnątrz narzędzia pomaga w debugowaniu
+        # Logging inside the tool helps with debugging
         print(f"🔎 [Tool] Researcher searching for: '{query}'")
         try:
             results = vector_store.search(query)
@@ -19,10 +19,10 @@ def get_search_tool(vector_store: VectorStore) -> Callable:
             
             formatted_results = []
             for res in results:
-                # Obsługa różnych formatów zwracanych przez Qdrant
+                # Handle different formats returned by Qdrant
                 content = None
                 
-                # Próba wyciągnięcia tekstu z różnych miejsc
+                # Attempt to extract text from different places
                 if isinstance(res, dict):
                     content = res.get('text') or res.get('content') or res.get('page_content')
                     if not content and 'payload' in res:

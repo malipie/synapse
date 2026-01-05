@@ -1,18 +1,16 @@
-FROM python:3.11-slim
+# frontend/Dockerfile
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
+COPY package.json package-lock.json* ./
 
-# ZMIANA: Dodano --system. To naprawia błąd "No virtual environment found".
-RUN pip install uv && uv pip install --system --no-cache-dir -r requirements.txt
+RUN npm install
 
-# Copy app code
 COPY . .
 
-# Expose Streamlit port
-EXPOSE 8501
+ENV NEXT_TELEMETRY_DISABLED 1
 
-# Run the app
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0"]
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]
