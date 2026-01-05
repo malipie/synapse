@@ -1,4 +1,4 @@
-# 🧠 Synapse Enterprise: Medical Agentic RAG Platform
+# Synapse Enterprise: Medical Agentic RAG Platform
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109-green.svg)](https://fastapi.tiangolo.com)
@@ -18,22 +18,22 @@ Synapse allows for asynchronous processing of heavy RAG tasks without blocking t
 
 ```mermaid
 graph TD
-    User[User (Browser)] -->|HTTP/WebSocket| Frontend[Frontend (Next.js)]
-    Frontend -->|REST API| API[API Gateway (FastAPI)]
+    User["User (Browser)"] -->|HTTP/WebSocket| Frontend["Frontend (Next.js)"]
+    Frontend -->|REST API| API["API Gateway (FastAPI)"]
     
     subgraph "Backend Infrastructure"
-        API -->|Enqueue Task| Redis[(Redis Queue)]
-        Worker[Background Worker (ARQ)] -->|Dequeue Task| Redis
+        API -->|Enqueue Task| Redis[("Redis Queue")]
+        Worker["Background Worker (ARQ)"] -->|Dequeue Task| Redis
         
-        Worker -->|Orchestrate| AutoGen[Medical Agent Team]
-        AutoGen -->|Search| Qdrant[(Qdrant Vector DB)]
-        AutoGen -->|Generate| LLM[Secure LLM Service]
+        Worker -->|Orchestrate| AutoGen["Medical Agent Team"]
+        AutoGen -->|Search| Qdrant[("Qdrant Vector DB")]
+        AutoGen -->|Generate| LLM["Secure LLM Service"]
         
-        LLM -->|Log Traces| Langfuse[Langfuse Observability]
-        LLM -->|Mask PII| Presidio[Microsoft Presidio]
+        LLM -->|Log Traces| Langfuse["Langfuse Observability"]
+        LLM -->|Mask PII| Presidio["Microsoft Presidio"]
     end
     
-    Langfuse -->|Store Metrics| Postgres[(PostgreSQL)]
+    Langfuse -->|Store Metrics| Postgres[("PostgreSQL")]
 ```
 # Key Components
 Frontend: Next.js (React) for a responsive chat interface and document management.
